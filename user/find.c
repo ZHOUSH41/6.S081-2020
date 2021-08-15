@@ -11,13 +11,13 @@ void find(char *path, char *filename)
 
   if ((fd = open(path, 0)) < 0)
   {
-    fprintf(2, "ls: cannot open %s\n", path);
+    fprintf(2, "find: cannot open %s\n", path);
     return;
   }
 
   if (fstat(fd, &st) < 0)
   {
-    fprintf(2, "ls: cannot stat %s\n", path);
+    fprintf(2, "find: cannot stat %s\n", path);
     close(fd);
     return;
   }
@@ -34,7 +34,7 @@ void find(char *path, char *filename)
     // buf就是全名，de.name是当前名字
     if (stat(buf, &st) < 0)
     {
-      printf("ls: cannot stat %s\n", buf);
+      printf("find: cannot stat %s\n", buf);
       continue;
     }
     switch (st.type)
@@ -61,7 +61,7 @@ int main(int argc, char *argv[])
 {
   if (argc != 3)
   {
-    fprintf(2, "usage: find filepath filename\n");
+    fprintf(2, "Usage: find filepath filename\n");
     exit(1);
   }
   find(argv[1], argv[2]);
