@@ -18,6 +18,7 @@ extern char trampoline[]; // trampoline.S
 /*
  * create a direct-map page table for the kernel.
  */
+// 设置内核页表
 void
 kvminit()
 {
@@ -49,6 +50,7 @@ kvminit()
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
+// 设置完成之后,要把kernel_pagetable放入stap寄存器中，让MMU来使用,可以认为w_satp之后,地址就变成了虚拟地址了,神奇
 void
 kvminithart()
 {
@@ -68,6 +70,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+// 找到对应的物理内存页，alloc用来标注没有找到时是否创建 非0创建，0不创建
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -145,14 +148,15 @@ kvmpa(uint64 va)
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
 // allocate a needed page-table page.
+// va映射到pa,实现的时候作了对齐
 int
 mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 {
   uint64 a, last;
   pte_t *pte;
 
-  a = PGROUNDDOWN(va);
-  last = PGROUNDDOWN(va + size - 1);
+  a = PGROUNDDOWN(va); // 对齐
+  last = PGROUNDDOWN(va + size - 1); // 对齐最后
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
@@ -439,4 +443,29 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void vmprint_helper(pagetable_t pagetable, int level) {
+// there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){
+       for (int j = 0; j < level; j++) {
+        printf(".. ");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        vmprint_helper((pagetable_t)child, level+1);
+      }
+    }
+  }
+  return;
+}
+
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_helper(pagetable, 1);
+  return;
 }
