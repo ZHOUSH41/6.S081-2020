@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -132,7 +134,8 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  // pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kpgtl, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -379,23 +382,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,38 +392,94 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  return copyinstr_new(pagetable, dst, srcva, max);
+}
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
+// vm_print helper function
+void vmprint_helper(pagetable_t pagetable, int level) {
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)){
+      for (int j = 0; j < level; j++) {
+        printf("..");
       }
-      --n;
-      --max;
-      p++;
-      dst++;
+      uint64 child = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.  
+        vmprint_helper((pagetable_t)child, level+1);
+      }
     }
-
-    srcva = va0 + PGSIZE;
   }
-  if(got_null){
+}
+
+// vm_print
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_helper(pagetable, 1); 
+}
+
+// 
+void uvmmap(pagetable_t pg, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if (mappages(pg, va, sz, pa, perm) != 0)
+    panic("kvmmap");
+}
+/*
+ * A kernel page table per process map 
+ */
+pagetable_t kvminit_per_process()
+{
+  pagetable_t kpgtl = uvmcreate();
+  if (kpgtl == 0)
     return 0;
-  } else {
-    return -1;
+  memset(kpgtl, 0, PGSIZE);
+
+  // uart registers
+  uvmmap(kpgtl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  uvmmap(kpgtl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  uvmmap(kpgtl, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  uvmmap(kpgtl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  uvmmap(kpgtl, KERNBASE, KERNBASE, (uint64)etext - KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  uvmmap(kpgtl, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  uvmmap(kpgtl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kpgtl;
+}
+
+// copy user page table to kernel page table
+void u2kvmcopy(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
+{
+  pte_t *pte_from, *pte_to;
+  uint64 a, pa;
+  uint flags;
+
+  if (newsz < oldsz)
+    return;
+
+  oldsz = PGROUNDUP(oldsz);
+  for (a = oldsz; a < newsz; a += PGSIZE)
+  {
+    if ((pte_from = walk(pagetable, a, 0)) == 0)
+      panic("u2kvmcopy: pte should exist");
+    if ((pte_to = walk(kpagetable, a, 1)) == 0)
+      panic("u2kvmcopy: walk fails");
+    pa = PTE2PA(*pte_from);
+    // 清除PTE_U的标记位
+    flags = (PTE_FLAGS(*pte_from) & (~PTE_U));
+    *pte_to = PA2PTE(pa) | flags;
   }
 }
