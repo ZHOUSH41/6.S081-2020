@@ -29,8 +29,6 @@ void procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      
   }
   kvminithart();
 }
@@ -164,7 +162,6 @@ void proc_freekpgtl(pagetable_t pagetable)
   }
   kfree((void *)pagetable);
 }
-
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -174,7 +171,15 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->pagetable)
+  if(p->kstack) {
+    pte_t *pte = walk(p->kpgtl, p->kstack, 0);
+    if (pte == 0)
+      panic("freeproc");
+    kfree((void *)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+
+  if (p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if (p->kstack) {
     pte_t *pte = walk(p->kpgtl, p->kstack, 0);
@@ -526,7 +531,6 @@ scheduler(void)
         w_satp(MAKE_SATP(p->kpgtl));
         sfence_vma();
         swtch(&c->context, &p->context);
-
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
